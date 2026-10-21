@@ -1,0 +1,13 @@
+# gitleaks configuration. The only "secrets" in this repository are the clearly-labelled,
+# development-only placeholders in .env.example and the fixed values used by unit tests.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Development placeholders and test fixtures"
+paths = [
+  '''\.env\.example$''',
+  '''services/.*/test/.*\.test\.js$''',
+  '''tests/e2e/.*\.mjs$''',
+  '''k8s/.*secret.*\.example\.yaml$''',
+]

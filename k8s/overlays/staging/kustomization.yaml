@@ -1,0 +1,28 @@
+# Staging overlay: the same base and the SAME image digests as production ("build once, promote
+# everywhere", L6 p.38-39). Only scale and namespace differ. The delivery workflow sets the image
+# with `kustomize edit set image` before applying it, then promotes that exact digest to production.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: maltashop-staging
+resources:
+  - ../../base
+patches:
+  - target: { kind: Deployment }
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target: { kind: HorizontalPodAutoscaler }
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1
+  - target: { kind: PodDisruptionBudget }
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 0
+images:
+  - name: ghcr.io/OWNER/order-service
+    newName: ghcr.io/OWNER/order-service
+    newTag: COMMIT_SHA

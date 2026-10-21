@@ -1,0 +1,23 @@
+%% How a notification failure becomes visible (the Notification incident design).
+flowchart TB
+  ex[["platform.events<br/>(topic exchange)"]] -->|"order.placed<br/>order.payment_declined"| q["notification.order-events"]
+  q --> h{"Notification handler"}
+  h -->|"sent"| ok["ack + notifications_sent_total<br/>+ last_success timestamp"]
+  h -->|"duplicate eventId"| dup["ack (skip)"]
+  h -->|"temporary failure,<br/>attempt < 4"| retry["notification.retry<br/>TTL back-off"]
+  retry -->|"dead-letters back"| q
+  h -->|"4th failure, malformed<br/>or permanent error"| dlq["notification.dlq<br/>kept 7 days"]
+  dlq -->|"operator fixes cause, then<br/>POST /internal/dlq/replay"| q
+
+  subgraph alerts["Prometheus alerts"]
+    a1["NotificationDeadLettersPresent<br/>DLQ depth > 0 for 1 min"]
+    a2["NotificationsStalled<br/>orders PAID but 0 emails in 10 min"]
+    a3["NotificationConsumerDown<br/>no consumer on the queue"]
+    a4["NotificationSendFailureRateHigh<br/>> 20% attempts failing"]
+    a5["NotificationBacklogGrowing / LatencyHigh"]
+  end
+  dlq -.-> a1
+  ok -.-> a2
+  q -.-> a3
+  h -.-> a4
+  q -.-> a5

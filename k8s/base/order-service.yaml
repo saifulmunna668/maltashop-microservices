@@ -1,0 +1,81 @@
+# order-service: rolling update with zero unavailable pods (L6 p.56-57, 62).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  labels: { app: order-service }
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app: order-service }
+  template:
+    metadata:
+      labels: { app: order-service }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: order-service
+          image: ghcr.io/OWNER/order-service:COMMIT_SHA   # set by kustomize images in the overlay
+          ports:
+            - containerPort: 3000
+          env:
+            - name: CATALOG_URL
+              valueFrom: { configMapKeyRef: { name: platform-config, key: CATALOG_URL } }
+            - name: INVENTORY_URL
+              valueFrom: { configMapKeyRef: { name: platform-config, key: INVENTORY_URL } }
+            - name: PAYMENT_URL
+              valueFrom: { configMapKeyRef: { name: platform-config, key: PAYMENT_URL } }
+            - name: PAYMENT_TIMEOUT_MS
+              valueFrom: { configMapKeyRef: { name: platform-config, key: PAYMENT_TIMEOUT_MS } }
+            - name: INTERNAL_JWT_SECRET
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: INTERNAL_JWT_SECRET } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: ORDER_DATABASE_URL } }
+            - name: AMQP_URL
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: AMQP_URL } }
+            - name: PORT
+              value: "3000"
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+          startupProbe:
+            httpGet: { path: /healthz, port: 3000 }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:          # process only; never checks dependencies (L6 p.101)
+            httpGet: { path: /healthz, port: 3000 }
+            periodSeconds: 10
+          readinessProbe:         # dependencies; failing removes the pod from the Service
+            httpGet: { path: /readyz, port: 3000 }
+            periodSeconds: 5
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  labels: { app: order-service }
+spec:
+  type: ClusterIP
+  selector: { app: order-service }
+  ports:
+    - { name: http, port: 3000, targetPort: 3000 }

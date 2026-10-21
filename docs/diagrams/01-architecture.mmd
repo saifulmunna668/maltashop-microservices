@@ -1,0 +1,51 @@
+%% MaltaShop container-level architecture (brief 2.1). Must match the service table in the report,
+%% docker-compose.yml and k8s/base. Solid arrows = synchronous HTTPS/REST; dashed = events via RabbitMQ.
+%% Grey dashed boxes = planned, not built in the prototype. Each service box names its own data store.
+flowchart TB
+  classDef planned fill:#f4f4f4,stroke:#888,stroke-dasharray: 5 5,color:#444
+  classDef ext fill:#fff4e5,stroke:#c98a1b
+  classDef edge fill:#e8f4ea,stroke:#3c8d4f
+
+  web["Web storefront + mobile app<br/>customers in Malta and Gozo"]
+  partners["Partner systems<br/>30 retailers + courier"]
+  idp["Identity provider (OIDC)"]:::planned
+  gw["<b>API Gateway</b><br/>authenticates every request:<br/>customer token or partner key + scopes<br/>rate limits, routing"]:::edge
+
+  web -->|HTTPS| gw
+  partners -->|HTTPS| gw
+  gw -.- idp
+
+  subgraph checkout["Checkout path: synchronous, the customer is waiting"]
+    direction LR
+    catalog["<b>Catalogue</b><br/>PostgreSQL"]
+    order["<b>Order</b> (saga orchestrator)<br/>PostgreSQL: orders + outbox"]
+    inventory["<b>Inventory</b><br/>PostgreSQL: stock, reservations"]
+    payment["<b>Payment</b> (provider adapter)<br/>PostgreSQL: no card data"]
+  end
+
+  gw --> catalog
+  gw --> order
+  order -->|prices| catalog
+  order -->|1 reserve| inventory
+  order -->|2 charge| payment
+
+  broker[["<b>RabbitMQ</b> topic exchange platform.events<br/>durable queues, retry, dead-letter queue"]]
+  order -.->|"order events via outbox"| broker
+  catalog -.->|"ProductViewed"| broker
+
+  subgraph async["Event consumers: never on the checkout path"]
+    direction LR
+    notif["<b>Notification</b><br/>delivery log"]
+    reco["<b>AI Recommendation</b><br/>Python model (prototype: Node)<br/>feature store: Redis"]
+    customer["<b>Customer accounts</b><br/>PostgreSQL"]:::planned
+  end
+
+  broker -.->|"3 confirm / release stock"| inventory
+  broker -.->|order.*| notif
+  broker -.->|"order.placed + product.viewed"| reco
+  gw -->|"300 ms, else bestsellers"| reco
+
+  psp["Card payment provider"]:::ext
+  email["Email provider"]:::ext
+  payment -->|tokens only| psp
+  notif --> email

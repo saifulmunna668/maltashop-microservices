@@ -1,0 +1,30 @@
+# Production overlay (L6 p.114-115). In GitOps (L6 p.116-117) CI only edits newTag below
+# (the commit SHA of images that passed the pipeline); Argo CD applies the change to the cluster.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: maltashop-prod
+resources:
+  - ../../base
+  # platform-secrets is created by External Secrets Operator, not committed here.
+images:
+  - name: ghcr.io/OWNER/api-gateway
+    newName: ghcr.io/OWNER/api-gateway
+    newTag: COMMIT_SHA
+  - name: ghcr.io/OWNER/catalog-service
+    newName: ghcr.io/OWNER/catalog-service
+    newTag: COMMIT_SHA
+  - name: ghcr.io/OWNER/inventory-service
+    newName: ghcr.io/OWNER/inventory-service
+    newTag: COMMIT_SHA
+  - name: ghcr.io/OWNER/order-service
+    newName: ghcr.io/OWNER/order-service
+    newTag: COMMIT_SHA
+  - name: ghcr.io/OWNER/payment-service
+    newName: ghcr.io/OWNER/payment-service
+    newTag: COMMIT_SHA
+  - name: ghcr.io/OWNER/recommendation-service
+    newName: ghcr.io/OWNER/recommendation-service
+    newTag: COMMIT_SHA
+  - name: ghcr.io/OWNER/notification-service
+    newName: ghcr.io/OWNER/notification-service
+    newTag: COMMIT_SHA

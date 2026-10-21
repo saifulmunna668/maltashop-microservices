@@ -1,0 +1,129 @@
+# Alert rules. The notification group is designed around the Notification incident:
+# it detects BOTH loud failures (errors, DLQ) and silent ones (orders paid but no emails sent,
+# consumer gone), because a notification outage produces no customer-facing error at checkout.
+# Thresholds are prototype values; tune them against real traffic (they assume steady order flow).
+groups:
+  - name: notifications
+    rules:
+      - alert: NotificationDeadLettersPresent
+        expr: max(notification_dlq_depth) > 0
+        for: 1m
+        labels: { severity: page, team: notifications }
+        annotations:
+          summary: "Notifications are parked in the DLQ"
+          description: "{{ $value }} message(s) in notification.dlq. Inspect the cause, fix it, then replay with POST /internal/dlq/replay."
+      - alert: NotificationsStalled
+        expr: |
+          sum(increase(orders_created_total{status="PAID"}[10m])) > 0
+          unless on() sum(increase(notifications_sent_total[10m])) > 0
+        for: 5m
+        labels: { severity: page, team: notifications }
+        annotations:
+          summary: "Orders are being paid but no confirmation emails are being sent"
+          description: "Silent-failure detector: checkout is working but notification-service has sent nothing for 10 minutes."
+      - alert: NotificationSendFailureRateHigh
+        expr: |
+          sum(rate(notifications_failed_attempts_total[5m]))
+            / clamp_min(sum(rate(notifications_failed_attempts_total[5m])) + sum(rate(notifications_sent_total[5m])), 1e-9) > 0.2
+        for: 5m
+        labels: { severity: ticket, team: notifications }
+        annotations:
+          summary: "More than 20% of notification send attempts are failing"
+      - alert: NotificationConsumerDown
+        expr: |
+          max(notification_consumer_connected) < 1
+          or absent(up{job="notification-service"} == 1)
+          or max(rabbitmq_detailed_queue_consumers{queue="notification.order-events"}) < 1
+        for: 2m
+        labels: { severity: page, team: notifications }
+        annotations:
+          summary: "Nothing is consuming notification.order-events"
+      - alert: NotificationBacklogGrowing
+        expr: max(rabbitmq_detailed_queue_messages_ready{queue="notification.order-events"}) > 100
+        for: 10m
+        labels: { severity: ticket, team: notifications }
+        annotations:
+          summary: "Notification queue backlog above 100 messages for 10 minutes"
+      - alert: NotificationMemoryHigh
+        # The March incident was a memory leak in the notification module. In its own container the
+        # leak can only kill notifications, and this alert warns before the 256 MB limit is reached.
+        expr: max(process_resident_memory_bytes{job="notification-service"}) > 200e6
+        for: 10m
+        labels: { severity: ticket, team: notifications }
+        annotations:
+          summary: "notification-service memory is close to its 256 MB limit (possible leak)"
+      - alert: NotificationLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(notification_end_to_end_seconds_bucket[10m]))) > 300
+        for: 10m
+        labels: { severity: ticket, team: notifications }
+        annotations:
+          summary: "95th percentile order-to-email time is above 5 minutes"
+
+  - name: checkout
+    rules:
+      - alert: OutboxBacklog
+        expr: max(order_outbox_pending) > 50
+        for: 5m
+        labels: { severity: page, team: orders }
+        annotations:
+          summary: "Order events are not reaching the broker (outbox backlog)"
+      - alert: PaymentCircuitOpen
+        expr: max(circuit_breaker_open{dependency="payment-service"}) == 1
+        for: 1m
+        labels: { severity: page, team: payments }
+        annotations:
+          summary: "order-service has opened its circuit to payment-service"
+  # Checkout SLO: 99.9% of checkout requests (POST /v1/orders) succeed over a rolling 30 days.
+  # "Succeed" = any response that is not 5xx (a declined card or out-of-stock item is a correct
+  # answer, not an outage). Error budget = 0.1% = about 43 minutes of full outage per 30 days.
+  # Two multi-window burn-rate alerts adapted from Thurgood et al. (2018). The workbook pages on both;
+  # with only two operations staff, the slow burn is raised as a ticket for working hours instead.
+  - name: checkout-slo
+    rules:
+      - record: checkout:error_ratio:rate5m
+        expr: |
+          sum(rate(http_request_duration_seconds_count{service="order-service",route="/v1/orders",method="POST",status=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_request_duration_seconds_count{service="order-service",route="/v1/orders",method="POST"}[5m])), 1e-9)
+      - record: checkout:error_ratio:rate30m
+        expr: |
+          sum(rate(http_request_duration_seconds_count{service="order-service",route="/v1/orders",method="POST",status=~"5.."}[30m]))
+            / clamp_min(sum(rate(http_request_duration_seconds_count{service="order-service",route="/v1/orders",method="POST"}[30m])), 1e-9)
+      - record: checkout:error_ratio:rate1h
+        expr: |
+          sum(rate(http_request_duration_seconds_count{service="order-service",route="/v1/orders",method="POST",status=~"5.."}[1h]))
+            / clamp_min(sum(rate(http_request_duration_seconds_count{service="order-service",route="/v1/orders",method="POST"}[1h])), 1e-9)
+      - record: checkout:error_ratio:rate6h
+        expr: |
+          sum(rate(http_request_duration_seconds_count{service="order-service",route="/v1/orders",method="POST",status=~"5.."}[6h]))
+            / clamp_min(sum(rate(http_request_duration_seconds_count{service="order-service",route="/v1/orders",method="POST"}[6h])), 1e-9)
+      - alert: CheckoutSLOFastBurn
+        # 14.4x the budget rate: 2% of the 30-day budget gone in one hour.
+        expr: checkout:error_ratio:rate1h > (14.4 * 0.001) and checkout:error_ratio:rate5m > (14.4 * 0.001)
+        for: 2m
+        labels: { severity: page, team: orders }
+        annotations:
+          summary: "Checkout is failing fast enough to exhaust the monthly error budget in about 2 days"
+          runbook: "1. Open the Checkout dashboard and read the error codes on POST /v1/orders (CATALOG_, INVENTORY_ or PAYMENT_UNAVAILABLE) to find the failing dependency; then follow that dependency's runbook."
+      - alert: CheckoutSLOSlowBurn
+        # 6x the budget rate: 5% of the budget gone in six hours.
+        expr: checkout:error_ratio:rate6h > (6 * 0.001) and checkout:error_ratio:rate30m > (6 * 0.001)
+        for: 15m
+        labels: { severity: ticket, team: orders }
+        annotations:
+          summary: "Checkout errors are steadily eating the error budget"
+          runbook: "1. Search the logs for level=error and service=order-service over the last 6 hours, grouped by error code, and open a ticket for the most frequent cause."
+
+  - name: platform
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels: { severity: page }
+        annotations:
+          summary: "{{ $labels.job }} is not answering metrics scrapes"
+      - alert: RecommendationFallbackHigh
+        expr: sum(rate(gateway_fallbacks_total{target="recommendation"}[5m])) > 1
+        for: 10m
+        labels: { severity: ticket, team: recommendations }
+        annotations:
+          summary: "Recommendations are being served from the bestseller fallback"

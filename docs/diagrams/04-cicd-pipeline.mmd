@@ -1,0 +1,18 @@
+%% Delivery pipeline for ONE service, order-service (brief 3.1). Labels on arrows are the gates.
+%% Source: .github/workflows/ci.yml (pull requests) and .github/workflows/order-service-delivery.yml (main).
+flowchart TB
+  classDef env fill:#e8f4ea,stroke:#3c8d4f
+  classDef ci fill:#f3eefc,stroke:#7a5cc7
+
+  subgraph row1["Integrate: pull request, then merge to main"]
+    direction LR
+    dev["Short-lived branch<br/>trunk-based,<br/>merged in 1-2 days"] --> ci["<b>Pull-request CI</b><br/>(ci.yml) lint, unit tests,<br/>secret scan, manifest<br/>check, smoke test"]:::ci
+    ci -->|"GATE: CI green +<br/>1 reviewer approves"| s1["<b>1 Verify</b> (on main)<br/>unit + consumer<br/>contract tests, provider<br/>contract test"]
+  end
+  subgraph row2["Deliver: order-service-delivery.yml"]
+    direction LR
+    s2["<b>2 Build once</b><br/>tag = commit SHA,<br/>Trivy scan, push,<br/>record digest"] -->|"GATE: no CRITICAL<br/>vulnerabilities"| s3["<b>3 Staging</b><br/>same digest,<br/>readiness, smoke test"]:::env
+    s3 -->|"GATE: smoke passes<br/>+ person approves"| s4["<b>4 Production</b><br/>same digest,<br/>rolling update"]:::env
+    s4 -->|"readiness<br/>fails"| rb["automatic<br/>rollout undo"]
+  end
+  row1 -->|"GATE: every test passes"| row2

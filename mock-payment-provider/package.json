@@ -1,0 +1,20 @@
+{
+  "name": "mock-payment-provider",
+  "version": "1.0.0",
+  "private": true,
+  "description": "mock-payment-provider (SOA & Microservices assessment prototype)",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "5.3.0"
+  },
+  "devDependencies": {
+    "supertest": "7.3.1"
+  }
+}

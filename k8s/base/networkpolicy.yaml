@@ -1,0 +1,84 @@
+# Default deny, then allow only the calls the architecture needs. Namespaces alone do not block
+# traffic (L6 p.86-87). This mirrors the Compose networks and enforces "only checkout may call payment".
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-from-ingress
+spec:
+  podSelector: { matchLabels: { app: api-gateway } }
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+      ports: [{ port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: catalog-from-gateway-and-orders
+spec:
+  podSelector: { matchLabels: { app: catalog-service } }
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: api-gateway } }
+        - podSelector: { matchLabels: { app: order-service } }
+      ports: [{ port: 3000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orders-from-gateway
+spec:
+  podSelector: { matchLabels: { app: order-service } }
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: api-gateway } } }]
+      ports: [{ port: 3000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inventory-from-orders-and-gateway
+spec:
+  podSelector: { matchLabels: { app: inventory-service } }
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: order-service } }
+        - podSelector: { matchLabels: { app: api-gateway } }   # read-only stock levels
+      ports: [{ port: 3000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: payment-only-from-orders
+spec:
+  podSelector: { matchLabels: { app: payment-service } }
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: order-service } } }]
+      ports: [{ port: 3000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recommendations-from-gateway
+spec:
+  podSelector: { matchLabels: { app: recommendation-service } }
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: api-gateway } } }]
+      ports: [{ port: 3000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-metrics-scrape
+spec:
+  podSelector: {}
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }

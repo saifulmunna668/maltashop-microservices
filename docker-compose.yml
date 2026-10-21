@@ -1,0 +1,222 @@
+# Local run of the whole prototype on one machine (L5 p.111-120).
+# Start: cp .env.example .env && docker compose up -d --build
+#
+# Networks (least privilege: each container joins only the networks it needs):
+#   edge      - public side: only the API gateway's port 8080 is meant for clients
+#   backend   - internal service-to-service traffic (internal: no route to the outside)
+#   psp       - payment-service <-> external payment provider (simulated)
+#   email     - notification-service <-> external email provider (simulated)
+#   ops       - operator UIs: RabbitMQ management, Prometheus, Grafana, email inbox
+
+x-node-service: &node-service
+  restart: unless-stopped
+  read_only: true                      # immutable container filesystem (L5 p.106-107)
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  deploy:
+    resources:
+      limits: { cpus: '0.50', memory: 256M }   # L5 p.83-84
+  logging:
+    driver: json-file
+    options: { max-size: '10m', max-file: '3' }
+
+services:
+  api-gateway:
+    <<: *node-service
+    build: ./services/api-gateway
+    image: maltashop/api-gateway:${IMAGE_TAG:-local}
+    ports: ['8080:8080']
+    environment:
+      PORT: 8080
+      METRICS_PORT: 9100
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:?set in .env}
+      EXTERNAL_JWT_SECRET: ${EXTERNAL_JWT_SECRET:?set in .env}
+      ENABLE_DEMO_LOGIN: 'true'
+      DEMO_USERS: ${DEMO_USERS}
+      PARTNER_KEYS: ${PARTNER_KEYS}
+      CATALOG_URL: http://catalog-service:3000
+      ORDER_URL: http://order-service:3000
+      INVENTORY_URL: http://inventory-service:3000
+      RECOMMENDATION_URL: http://recommendation-service:3000
+      RATE_LIMIT_PARTNER: 60
+      RATE_LIMIT_CUSTOMER: 120
+    networks: [edge, backend]
+    depends_on:
+      catalog-service: { condition: service_healthy }
+      order-service: { condition: service_healthy }
+
+  catalog-service:
+    <<: *node-service
+    build: ./services/catalog-service
+    image: maltashop/catalog-service:${IMAGE_TAG:-local}
+    environment:
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:?set in .env}
+      # Browsing events are best effort: the catalogue starts and serves pages without the broker.
+      AMQP_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+    networks: [backend]
+
+  inventory-service:
+    <<: *node-service
+    build: ./services/inventory-service
+    image: maltashop/inventory-service:${IMAGE_TAG:-local}
+    environment:
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:?set in .env}
+      DATABASE_URL: postgres://inventory_svc:${INVENTORY_DB_PASSWORD}@postgres:5432/inventory_db
+      AMQP_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      RESERVATION_TTL_SECONDS: 900
+    networks: [backend]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  order-service:
+    <<: *node-service
+    build: ./services/order-service
+    image: maltashop/order-service:${IMAGE_TAG:-local}
+    environment:
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:?set in .env}
+      DATABASE_URL: postgres://order_svc:${ORDER_DB_PASSWORD}@postgres:5432/orders_db
+      AMQP_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      CATALOG_URL: http://catalog-service:3000
+      INVENTORY_URL: http://inventory-service:3000
+      PAYMENT_URL: http://payment-service:3000
+      PAYMENT_TIMEOUT_MS: 8000
+      # Note: there is deliberately NO recommendation-service URL here. Checkout cannot call it.
+    networks: [backend]
+    depends_on:
+      postgres: { condition: service_healthy }
+      catalog-service: { condition: service_healthy }
+      inventory-service: { condition: service_healthy }
+      payment-service: { condition: service_healthy }
+
+  payment-service:
+    <<: *node-service
+    build: ./services/payment-service
+    image: maltashop/payment-service:${IMAGE_TAG:-local}
+    environment:
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:?set in .env}
+      DATABASE_URL: postgres://payment_svc:${PAYMENT_DB_PASSWORD}@postgres:5432/payments_db
+      PSP_BASE_URL: http://mock-payment-provider:3000
+      PSP_API_KEY: ${PSP_API_KEY:?set in .env}
+      PSP_TIMEOUT_MS: 2000
+    networks: [backend, psp]
+    depends_on:
+      postgres: { condition: service_healthy }
+      mock-payment-provider: { condition: service_healthy }
+
+  recommendation-service:
+    <<: *node-service
+    build: ./services/recommendation-service
+    image: maltashop/recommendation-service:${IMAGE_TAG:-local}
+    environment:
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:?set in .env}
+      AMQP_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      FAULT_DELAY_MS: ${RECO_FAULT_DELAY_MS:-0}
+      FAULT_ERROR_RATE: ${RECO_FAULT_ERROR_RATE:-0}
+    networks: [backend]
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+
+  notification-service:
+    <<: *node-service
+    build: ./services/notification-service
+    image: maltashop/notification-service:${IMAGE_TAG:-local}
+    environment:
+      AMQP_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+      EMAIL_PROVIDER_URL: http://mock-email-provider:3000
+      EMAIL_PROVIDER_API_KEY: ${EMAIL_PROVIDER_API_KEY:?set in .env}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set in .env}
+      MAX_ATTEMPTS: 4
+      RETRY_DELAY_MS: 5000
+    networks: [backend, email]
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+
+  # ---- Simulated EXTERNAL providers (not part of the platform) ----
+  mock-payment-provider:
+    <<: *node-service
+    build: ./services/mock-payment-provider
+    image: maltashop/mock-payment-provider:${IMAGE_TAG:-local}
+    environment:
+      PSP_API_KEY: ${PSP_API_KEY:?set in .env}
+      FAILURE_RATE: ${PSP_FAILURE_RATE:-0}
+    networks: [psp]
+
+  mock-email-provider:
+    <<: *node-service
+    build: ./services/mock-email-provider
+    image: maltashop/mock-email-provider:${IMAGE_TAG:-local}
+    environment:
+      EMAIL_PROVIDER_API_KEY: ${EMAIL_PROVIDER_API_KEY:?set in .env}
+      FAILURE_RATE: ${EMAIL_FAILURE_RATE:-0}
+    ports: ['127.0.0.1:8025:3000']   # inbox view for demos: GET /v1/messages
+    networks: [email, ops]
+
+  # ---- Backing services (12-Factor IV) ----
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      ORDER_DB_PASSWORD: ${ORDER_DB_PASSWORD:?set in .env}
+      PAYMENT_DB_PASSWORD: ${PAYMENT_DB_PASSWORD:?set in .env}
+      INVENTORY_DB_PASSWORD: ${INVENTORY_DB_PASSWORD:?set in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [backend]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?set in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set in .env}
+    volumes:
+      - rabbitdata:/var/lib/rabbitmq
+      - ./infra/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+    ports: ['127.0.0.1:15672:15672']   # management UI, localhost only
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend, ops]
+
+  # ---- Monitoring ----
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports: ['127.0.0.1:9090:9090']
+    networks: [backend, ops]
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    profiles: [dashboards]          # start with: docker compose --profile dashboards up -d
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set in .env}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports: ['127.0.0.1:3001:3000']
+    networks: [ops]
+
+networks:
+  edge: {}
+  backend: { internal: true }
+  psp: { internal: true }
+  email: { internal: true }
+  ops: {}
+
+volumes:
+  pgdata: {}
+  rabbitdata: {}

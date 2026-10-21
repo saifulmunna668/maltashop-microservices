@@ -1,0 +1,37 @@
+{
+  "consumer": "order-service",
+  "provider": "payment-service",
+  "description": "Consumer-driven contract for POST /v1/payments. order-service relies only on the fields listed in each response. Values written as \"<string>\" or \"<integer>\" match any value of that type; everything else must match exactly. Both services run this file in their unit tests, so a change on either side that breaks it fails CI before deployment.",
+  "interactions": [
+    {
+      "description": "an approved card payment",
+      "request": {
+        "method": "POST",
+        "path": "/v1/payments",
+        "headers": { "idempotency-key": "order-0b9d6a52-2d3e-4f0a-9d55-7b1c1a2e3f40" },
+        "body": { "orderId": "0b9d6a52-2d3e-4f0a-9d55-7b1c1a2e3f40", "amountMinor": 2250, "currency": "EUR", "paymentToken": "tok_visa" }
+      },
+      "response": { "status": 201, "body": { "paymentId": "<string>", "status": "APPROVED" } }
+    },
+    {
+      "description": "a declined card payment",
+      "request": {
+        "method": "POST",
+        "path": "/v1/payments",
+        "headers": { "idempotency-key": "order-1c8e7b63-3e4f-4a1b-8e66-8c2d2b3f4a51" },
+        "body": { "orderId": "1c8e7b63-3e4f-4a1b-8e66-8c2d2b3f4a51", "amountMinor": 2250, "currency": "EUR", "paymentToken": "tok_declined" }
+      },
+      "response": { "status": 201, "body": { "paymentId": "<string>", "status": "DECLINED", "declineCode": "<string>" } }
+    },
+    {
+      "description": "a raw card number is refused",
+      "request": {
+        "method": "POST",
+        "path": "/v1/payments",
+        "headers": { "idempotency-key": "order-2d9f8c74-4f5a-4b2c-9f77-9d3e3c4a5b62" },
+        "body": { "orderId": "2d9f8c74-4f5a-4b2c-9f77-9d3e3c4a5b62", "amountMinor": 2250, "currency": "EUR", "paymentToken": "4242424242424242" }
+      },
+      "response": { "status": 400, "body": { "code": "CARD_DATA_NOT_ACCEPTED" } }
+    }
+  ]
+}

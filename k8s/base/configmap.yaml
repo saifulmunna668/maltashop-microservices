@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+data:
+  CATALOG_URL: http://catalog-service:3000
+  ORDER_URL: http://order-service:3000
+  INVENTORY_URL: http://inventory-service:3000
+  RESERVATION_TTL_SECONDS: "900"
+  PAYMENT_URL: http://payment-service:3000
+  RECOMMENDATION_URL: http://recommendation-service:3000
+  PAYMENT_TIMEOUT_MS: "8000"
+  PSP_BASE_URL: https://api.payment-provider.example   # the real provider's endpoint
+  PSP_TIMEOUT_MS: "2000"
+  EMAIL_PROVIDER_URL: https://api.email-provider.example
+  MAX_ATTEMPTS: "4"
+  RETRY_DELAY_MS: "30000"
+  RATE_LIMIT_PARTNER: "60"
+  RATE_LIMIT_CUSTOMER: "120"

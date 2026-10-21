@@ -1,0 +1,79 @@
+# notification-service: rolling update with zero unavailable pods (L6 p.56-57, 62).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  labels: { app: notification-service }
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app: notification-service }
+  template:
+    metadata:
+      labels: { app: notification-service }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: notification-service
+          image: ghcr.io/OWNER/notification-service:COMMIT_SHA   # set by kustomize images in the overlay
+          ports:
+            - containerPort: 3000
+          env:
+            - name: EMAIL_PROVIDER_URL
+              valueFrom: { configMapKeyRef: { name: platform-config, key: EMAIL_PROVIDER_URL } }
+            - name: MAX_ATTEMPTS
+              valueFrom: { configMapKeyRef: { name: platform-config, key: MAX_ATTEMPTS } }
+            - name: RETRY_DELAY_MS
+              valueFrom: { configMapKeyRef: { name: platform-config, key: RETRY_DELAY_MS } }
+            - name: AMQP_URL
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: AMQP_URL } }
+            - name: EMAIL_PROVIDER_API_KEY
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: EMAIL_PROVIDER_API_KEY } }
+            - name: ADMIN_TOKEN
+              valueFrom: { secretKeyRef: { name: platform-secrets, key: ADMIN_TOKEN } }
+            - name: PORT
+              value: "3000"
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+          startupProbe:
+            httpGet: { path: /healthz, port: 3000 }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:          # process only; never checks dependencies (L6 p.101)
+            httpGet: { path: /healthz, port: 3000 }
+            periodSeconds: 10
+          readinessProbe:         # dependencies; failing removes the pod from the Service
+            httpGet: { path: /readyz, port: 3000 }
+            periodSeconds: 5
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  labels: { app: notification-service }
+spec:
+  type: ClusterIP
+  selector: { app: notification-service }
+  ports:
+    - { name: http, port: 3000, targetPort: 3000 }

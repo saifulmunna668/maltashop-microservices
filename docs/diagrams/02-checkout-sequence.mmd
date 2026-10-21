@@ -1,0 +1,41 @@
+%% Checkout saga (brief 6.1). Matches services/order-service/src/app.js runSaga() and
+%% services/inventory-service/src/eventHandler.js. Solid = synchronous HTTP; dashed = reply or event.
+%% Render with mermaid-sequence-config.json.
+sequenceDiagram
+
+  actor C as Customer app
+  participant GW as API Gateway
+  participant O as Order (orchestrator)
+  participant I as Inventory
+  participant P as Payment
+  participant MQ as RabbitMQ
+  participant N as Notification
+
+  C->>GW: POST /api/v1/orders (JWT, Idempotency-Key)
+  GW->>O: verified, scope orders:create, X-Request-Id
+  O->>O: prices from Catalogue, save order PENDING
+  O->>I: 1. reserve stock (id order-<orderId>)
+  alt out of stock
+    I-->>O: 409, nothing reserved
+    O-->>C: 409 OUT_OF_STOCK, no payment taken
+  else reserved (held for 15 min)
+    I-->>O: 201 reserved
+    O->>P: 2. charge (Idempotency-Key = order id)
+    alt approved
+      P-->>O: APPROVED
+      O->>O: 3. one DB transaction: PAID + outbox OrderPlaced
+      O-->>C: 201 PAID
+      O--)MQ: outbox relay publishes OrderPlaced
+      MQ--)I: confirm reservation (stock sold)
+      MQ--)N: send confirmation email
+    else declined
+      P-->>O: DECLINED
+      O->>O: PAYMENT_DECLINED + outbox OrderPaymentDeclined
+      O-->>C: 402 PAYMENT_DECLINED
+      O--)MQ: OrderPaymentDeclined
+      MQ--)I: compensation: release reservation
+    else no answer (timeout or open circuit)
+      O-->>C: 503 PAYMENT_UNAVAILABLE, retry with same key
+      Note over O,I: Retry resumes at step 1 (idempotent). If nobody retries,<br/>the reservation expires and the stock goes back on sale.
+    end
+  end

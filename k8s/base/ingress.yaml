@@ -1,0 +1,20 @@
+# Only the gateway is reachable from outside the cluster (L6 p.81-82).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [api.maltashop.example]
+      secretName: api-tls
+  rules:
+    - host: api.maltashop.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: api-gateway, port: { number: 8080 } }
